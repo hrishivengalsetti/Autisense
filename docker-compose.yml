@@ -136,8 +136,8 @@ services:
     depends_on:
       - backend
     environment:
-      VITE_GROQ_API_KEY: ""
-      VITE_GEOAPIFY_API_KEY: ""
+      VITE_GROQ_API_KEY: "${VITE_GROQ_API_KEY}"
+      VITE_GEOAPIFY_API_KEY: "${VITE_GEOAPIFY_API_KEY}"
     volumes:
       - ./frontend:/app
       - /app/node_modules

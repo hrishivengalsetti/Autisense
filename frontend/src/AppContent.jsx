@@ -18,9 +18,26 @@ export default function AppContent() {
   const [currentScreen, setCurrentScreen] = useState('login');
   const [assessmentStatus, setAssessmentStatus] = useState({ video: false, questionnaire: false });
   const [sessionUUID, setSessionUUID] = useState(() => localStorage.getItem('session_uuid'));
+  const [newSessionLoading, setNewSessionLoading] = useState(false);
 
   const navigateTo = (screen) => setCurrentScreen(screen);
   const markComplete = (task) => setAssessmentStatus(prev => ({ ...prev, [task]: true }));
+
+  // Creates a brand-new session, clearing any completed/stale one
+  const startNewAssessment = async () => {
+    setNewSessionLoading(true);
+    try {
+      const session = await AuthAPI.createGuestSession();
+      setSessionUUID(session.session_uuid);
+      localStorage.setItem('session_uuid', session.session_uuid);
+      setAssessmentStatus({ video: false, questionnaire: false });
+      navigateTo('assessment_hub');
+    } catch (err) {
+      console.error('Could not create new session:', err);
+    } finally {
+      setNewSessionLoading(false);
+    }
+  };
 
   // Route guard
   useEffect(() => {
@@ -78,8 +95,8 @@ export default function AppContent() {
 
         <div className={`flex-1 relative h-screen overflow-hidden flex flex-col ${['home', 'assessment_hub', 'results', 'clinics', 'history', 'profile'].includes(currentScreen) ? 'md:w-[calc(100%-16rem)]' : 'w-full'}`}>
           {currentScreen === 'login' && <LoginScreen onNavigate={navigateTo} />}
-          {currentScreen === 'home' && <HomeScreen onNavigate={navigateTo} />}
-          {currentScreen === 'assessment_hub' && <AssessmentHubScreen onNavigate={navigateTo} status={assessmentStatus} />}
+          {currentScreen === 'home' && <HomeScreen onNavigate={navigateTo} onStartNew={startNewAssessment} newSessionLoading={newSessionLoading} />}
+          {currentScreen === 'assessment_hub' && <AssessmentHubScreen onNavigate={navigateTo} status={assessmentStatus} onStartNew={startNewAssessment} newSessionLoading={newSessionLoading} />}
           {currentScreen === 'video_analysis' && <VideoAnalysisScreen onNavigate={navigateTo} onComplete={() => markComplete('video')} sessionUUID={sessionUUID} />}
           {currentScreen === 'questionnaire' && <QuestionnaireScreen onNavigate={navigateTo} onComplete={() => markComplete('questionnaire')} sessionUUID={sessionUUID} />}
           {currentScreen === 'results' && <ResultsScreen onNavigate={navigateTo} sessionUUID={sessionUUID} />}
@@ -190,7 +207,7 @@ function LoginScreen({ onNavigate }) {
 }
 
 // ── HOME SCREEN ───────────────────────────────────────────────────
-function HomeScreen({ onNavigate }) {
+function HomeScreen({ onNavigate, onStartNew, newSessionLoading }) {
   const { user } = useAuth();
   const displayName = user?.display_name || 'Guest';
   const initials = displayName.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase();
@@ -234,8 +251,8 @@ function HomeScreen({ onNavigate }) {
           <p className="text-teal-50 text-[15px] mb-8 max-w-sm leading-relaxed relative z-10">
             Launch the guided setup to begin evaluating behavior patterns. Completing the video and questionnaire provides an accurate risk assessment.
           </p>
-          <button onClick={() => onNavigate('assessment_hub')} className="bg-[#2ECC71] hover:bg-green-400 text-white font-bold py-4 px-6 rounded-full w-full shadow-lg transition-all relative z-10 text-lg flex items-center justify-center gap-2">
-            Start Test <ChevronRight className="w-5 h-5" />
+          <button onClick={onStartNew} disabled={newSessionLoading} className="bg-[#2ECC71] hover:bg-green-400 text-white font-bold py-4 px-6 rounded-full w-full shadow-lg transition-all relative z-10 text-lg flex items-center justify-center gap-2 disabled:opacity-70">
+            {newSessionLoading ? 'Preparing...' : <><span>Start Test</span><ChevronRight className="w-5 h-5" /></>}
           </button>
         </div>
       </div>
@@ -244,7 +261,7 @@ function HomeScreen({ onNavigate }) {
 }
 
 // ── ASSESSMENT HUB SCREEN ─────────────────────────────────────────
-function AssessmentHubScreen({ onNavigate, status }) {
+function AssessmentHubScreen({ onNavigate, status, onStartNew, newSessionLoading }) {
   const isReady = status.video && status.questionnaire;
 
   return (
@@ -287,9 +304,12 @@ function AssessmentHubScreen({ onNavigate, status }) {
           </button>
         </div>
 
-        <div className="pt-4 border-t border-gray-200">
+        <div className="pt-4 border-t border-gray-200 space-y-3">
           <button onClick={() => isReady ? onNavigate('results') : null} className={`w-full py-4 rounded-full font-bold text-lg transition-all shadow-md ${isReady ? 'bg-[#1A9E7A] hover:bg-teal-700 text-white shadow-teal-200' : 'bg-gray-200 text-gray-400 cursor-not-allowed shadow-none'}`} disabled={!isReady}>
             {isReady ? 'Generate Final Report' : 'Complete modules to unlock'}
+          </button>
+          <button onClick={onStartNew} disabled={newSessionLoading} className="w-full py-3 rounded-full font-semibold text-sm text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-all border border-gray-200 disabled:opacity-50">
+            {newSessionLoading ? 'Creating new session...' : '↩ Start Over (New Assessment)'}
           </button>
         </div>
       </div>
@@ -622,6 +642,41 @@ function ResultsScreen({ onNavigate, sessionUUID }) {
   );
 }
 
+// ── CHATBOT SYSTEM PROMPT ───────────────────────────────────────
+const AUTISM_SYSTEM_PROMPT = `You are a specialized medical assistant that operates ONLY after presenting autism assessment results.
+
+Your role is strictly limited to discussing autism spectrum disorder (ASD) and closely related topics.
+
+CORE RULES:
+
+1. You must ONLY respond to questions related to:
+   - Autism Spectrum Disorder (ASD)
+   - Child behavior, development, and social interaction
+   - Autism symptoms, early signs, and screening
+   - Therapy options (ABA, speech therapy, occupational therapy, etc.)
+   - Caregiver guidance and support strategies
+   - Mental health topics directly related to autism
+
+2. STRICT DOMAIN LIMITATION:
+If a user asks ANYTHING outside autism-related topics (examples include but are not limited to: sports like NFL, politics, movies, general knowledge, coding, etc.), you MUST politely refuse, clearly state that the question is outside your domain, and redirect the user back to autism-related topics.
+
+3. REJECTION FORMAT (MANDATORY):
+For out-of-scope questions, respond EXACTLY in this style:
+"I'm here to assist with autism-related questions only. Your request is outside my domain. Please ask something related to autism, child development, or behavioral health."
+
+Do NOT attempt to answer the question, provide partial or indirect answers, or switch to general assistant mode.
+
+4. RESPONSE STYLE:
+- Be clear, calm, and supportive
+- Avoid giving definitive medical diagnoses
+- Encourage consulting qualified professionals when needed
+- Keep answers relevant and concise
+
+5. NEVER:
+- Answer non-autism questions under any circumstances
+- Act as a general-purpose chatbot
+- Provide unrelated information even if the user insists`;
+
 // ── CHATBOT SCREEN ───────────────────────────────────────────────
 function ChatbotScreen({ onNavigate }) {
   const [messages, setMessages] = useState([]);
@@ -641,7 +696,7 @@ function ChatbotScreen({ onNavigate }) {
     fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-      body: JSON.stringify({ model: 'llama-3.3-70b-versatile', messages: [{ role: 'user', content: "Generate a warm, empathetic opening message for a guardian who has just received their child's autism screening results. Keep it under 3 sentences." }], max_tokens: 150, temperature: 0.7 })
+      body: JSON.stringify({ model: 'llama-3.3-70b-versatile', messages: [{ role: 'system', content: AUTISM_SYSTEM_PROMPT }, { role: 'user', content: "Generate a warm, empathetic opening message for a guardian who has just received their child's autism screening results. Keep it under 3 sentences. Stay focused on autism support." }], max_tokens: 150, temperature: 0.7 })
     }).then(res => res.json()).then(data => {
       setMessages([{ id: 1, sender: 'ai', text: data.choices[0].message.content, time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }]);
     }).catch(() => {
@@ -667,7 +722,7 @@ function ChatbotScreen({ onNavigate }) {
       const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-        body: JSON.stringify({ model: 'llama-3.3-70b-versatile', messages: [...conversationHistory, { role: 'user', content: userMessage }], max_tokens: 500, temperature: 0.7 })
+        body: JSON.stringify({ model: 'llama-3.3-70b-versatile', messages: [{ role: 'system', content: AUTISM_SYSTEM_PROMPT }, ...conversationHistory, { role: 'user', content: userMessage }], max_tokens: 500, temperature: 0.7 })
       });
       const data = await res.json();
       const botReply = data.choices[0].message.content;
